@@ -1,6 +1,5 @@
 #!/bin/bash
 set -e
-set -x
 
 # Color codes
 RED='\033[0;31m'
