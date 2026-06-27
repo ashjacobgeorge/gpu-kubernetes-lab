@@ -2,9 +2,16 @@
 set -e
 set -x
 
+mkdir -p ~/gpu-kubernetes-lab/logs
+
+LOGFILE=~/gpu-kubernetes-lab/logs/startup-$(date +%Y%m%d-%H%M%S).log
+
+exec > >(tee -a "$LOGFILE") 2>&1
+
 echo ""
 echo "================================================"
 echo "   Kubernetes Cluster Startup Starting"
+echo "   Log file: $LOGFILE"
 echo "================================================"
 echo ""
 
@@ -36,5 +43,6 @@ echo "===> [5/5] Done."
 echo ""
 echo "================================================"
 echo "   Cluster is up and ready"
+echo "   Full log saved to: $LOGFILE"
 echo "================================================"
 echo ""
