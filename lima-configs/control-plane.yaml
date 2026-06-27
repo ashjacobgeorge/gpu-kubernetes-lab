@@ -14,7 +14,7 @@ images:
     arch: aarch64
 
 networks:
-  - vzNAT: true
+  - lima: shared
 
 provision:
   - mode: system
