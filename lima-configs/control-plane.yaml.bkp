@@ -1,0 +1,92 @@
+# Control Plane Node
+# Role: API server, scheduler, etcd, controller-manager
+# This is the "brain" of the Kubernetes cluster
+#Where this YAML came from — 4 sources combined
+#1. Lima's official documentation and examples
+#Lima has an official GitHub repo at github.com/lima-vm/lima with example YAML templates for different use cases. There's actually a folder called /examples in their repo with templates for Kubernetes, Docker, etc. That's the starting point for any Lima config.
+#github.com/lima-vm/lima/tree/master/examples
+#2. Kubernetes official documentation
+#The provision script content — the swap disabling, kernel modules, sysctl settings, containerd setup — comes directly from Kubernetes' own installation guide:
+#kubernetes.io/docs/setup/production-environment/tools/kubeadm/install-kubeadm/
+#That page tells you exactly what a Linux machine needs before kubeadm can run on it. I translated those steps into a bash script inside the Lima provision block.#
+#3. containerd documentation
+#The containerd configuration part came from:
+#github.com/containerd/containerd/blob/main/docs/getting-started.md
+#4. Experience and pattern matching
+#Honestly — I combined all of the above with knowledge of what commonly breaks on Apple Silicon specifically. For example:
+#
+#vmType: vz instead of qemu — QEMU works but is much slower on M4, vz uses Apple's native framework
+#arch: aarch64 — easy to miss, people often copy x86 configs and wonder why it's slow
+#SystemdCgroup = true — this trips up almost everyone on first setup, it's buried in the containerd docs
+
+
+
+#This tells Lima what type of virtual machine to create. vz means Apple's own built-in virtualisation framework (Virtualization.framework) — it's the fastest option on M4 chips. aarch64 means ARM64 architecture, which is what your M4 chip uses natively.When I tried using  x86 here it was painfully slow because it would have to emulate an Intel chip.
+vmType: vz
+os: Linux
+arch: aarch64
+
+cpus: 2
+memory: "3.5GiB"
+disk: "20GiB"
+
+images:
+  - location: "https://cloud-images.ubuntu.com/releases/22.04/release/ubuntu-22.04-server-cloudimg-arm64.img"
+    arch: aarch64
+#This sets up networking for the VM. vzNAT means the VM shares your Mac's internet connection through Network Address Translation — exactly like how your home router shares one internet connection across multiple devices. Your VM can reach the internet to download packages, but it lives on a private internal network.
+networks:
+  - vzNAT: true
+
+# Kubernetes requires swap to be disabled
+provision:
+  - mode: system
+    script: |
+      #!/bin/bash
+      set -e
+      # Disable swap
+      swapoff -a
+      sed -i '/swap/d' /etc/fstab
+
+      # Load required kernel modules
+      cat <<MODULES > /etc/modules-load.d/k8s.conf
+      overlay
+      br_netfilter
+      MODULES
+      modprobe overlay
+      modprobe br_netfilter
+
+      # Kernel networking settings Kubernetes needs
+      cat <<SYSCTL > /etc/sysctl.d/k8s.conf
+      net.bridge.bridge-nf-call-iptables  = 1
+      net.bridge.bridge-nf-call-ip6tables = 1
+      net.ipv4.ip_forward                 = 1
+      SYSCTL
+      sysctl --system
+
+      # Install containerd (the container runtime)
+      apt-get update -y
+      apt-get install -y containerd apt-transport-https curl gpg
+
+      # Configure containerd
+      mkdir -p /etc/containerd
+      containerd config default > /etc/containerd/config.toml
+# The config change (SystemdCgroup = true) tells containerd to use Linux's systemd for managing container processes — required for Kubernetes to work correctly.
+      sed -i "s/SystemdCgroup = false/SystemdCgroup = true/" /etc/containerd/config.toml
+      systemctl restart containerd
+      systemctl enable containerd
+
+      # Add Kubernetes apt repo
+      curl -fsSL https://pkgs.k8s.io/core:/stable:/v1.29/deb/Release.key | gpg --dearmor -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg
+      echo 'deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/v1.29/deb/ /' > /etc/apt/sources.list.d/kubernetes.list
+
+      # Install Kubernetes components
+      apt-get update -y
+      apt-get install -y kubelet kubeadm kubectl
+      apt-mark hold kubelet kubeadm kubectl
+
+hostResolver:
+  enabled: true
+
+containerd:
+  system: false
+  user: false
