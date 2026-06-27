@@ -1,0 +1,204 @@
+# Troubleshooting
+
+Real issues encountered while building this lab and how they were resolved.
+These are not hypothetical - every issue below actually happened during the build.
+
+---
+
+## Issue 1 - YAML validation error - single quotes in sed command
+
+### Symptom
+limactl validate control-plane.yaml returned:
+
+    FATA[0000] failed to unmarshal YAML: value is not allowed in this context
+    > 74 | sed -i 's/SystemdCgroup = false/SystemdCgroup = true/'
+
+### Root cause
+Single quotes inside a YAML block scalar confuse the YAML parser.
+The parser sees the single quote as a YAML string delimiter rather
+than part of a bash command.
+
+### Fix
+Replace single quotes with double quotes in sed commands inside YAML:
+
+    # Wrong
+    sed -i 's/SystemdCgroup = false/SystemdCgroup = true/' file
+
+    # Correct
+    sed -i "s/SystemdCgroup = false/SystemdCgroup = true/" file
+
+### Lesson learned
+Always run limactl validate before starting a VM. Catches syntax
+errors without wasting time booting a broken VM.
+
+---
+
+## Issue 2 - YAML validation error - heredoc syntax inside provision script
+
+### Symptom
+    FATA[0000] failed to unmarshal YAML: non-map value is specified
+    > 40 | overlay
+
+### Root cause
+Heredoc markers inside YAML block scalars are interpreted as YAML
+syntax rather than bash syntax. The YAML parser sees the content
+between heredoc markers as YAML key-value pairs.
+
+    # This breaks inside YAML
+    cat > /etc/modules-load.d/k8s.conf << MODULES
+    overlay
+    br_netfilter
+    MODULES
+
+### Fix
+Replace heredocs with printf statements which stay on a single line
+and never confuse the YAML parser:
+
+    # This works inside YAML
+    printf 'overlay\nbr_netfilter\n' > /etc/modules-load.d/k8s.conf
+
+### Lesson learned
+Avoid heredocs inside YAML provision scripts entirely. printf is
+cleaner and more portable.
+
+---
+
+## Issue 3 - Worker nodes cannot reach control-plane API server
+
+### Symptom
+Running kubeadm join on worker nodes failed with:
+
+    error execution phase preflight: couldn't validate the identity of the API Server:
+    dial tcp <CONTROL-PLANE-IP>:6443: connect: no route to host
+
+Ping from worker to control-plane confirmed the issue:
+
+    ping <CONTROL-PLANE-IP>
+    From <WORKER-IP>: Destination Host Unreachable - 100% packet loss
+
+### Root cause
+Lima vzNAT networking gives each VM its own isolated NAT network.
+VMs cannot communicate directly with each other. Each VM is on its
+own private network with no bridge between them.
+
+    vzNAT behaviour:
+    control-plane  →  <CONTROL-PLANE-IP>  (isolated)
+    worker-1       →  <WORKER-1-IP>       (isolated)
+    worker-2       →  <WORKER-2-IP>       (isolated)
+    No route between them
+
+### Fix
+Switch from vzNAT to shared networking mode in all Lima YAML files:
+
+    # Wrong
+    networks:
+      - vzNAT: true
+
+    # Correct
+    networks:
+      - lima: shared
+
+This requires socket_vmnet installed from source. See Issue 4.
+
+Delete existing VMs and recreate with new network config:
+
+    limactl delete control-plane worker-1 worker-2 worker-3
+    limactl start control-plane.yaml
+
+Verify connectivity before running kubeadm:
+
+    limactl shell worker-1 -- ping <CONTROL-PLANE-IP> -c 3
+
+### Lesson learned
+Always verify VM-to-VM connectivity before running kubeadm.
+One ping command saves hours of debugging kubeadm errors.
+
+---
+
+## Issue 4 - socket_vmnet Homebrew installation rejected by Lima
+
+### Symptom
+After installing socket_vmnet via Homebrew and switching to shared
+networking Lima still failed:
+
+    FATA[0002] networks.yaml: "/opt/socket_vmnet/bin/socket_vmnet"
+    (`paths.socketVMNet`) has to be installed
+
+### Root cause
+Lima deliberately rejects socket_vmnet installed via Homebrew.
+Homebrew installs to /opt/homebrew which is user-writable.
+socket_vmnet runs as root and creates network interfaces.
+If installed in a user-writable location a malicious program
+could replace it with something harmful.
+
+Lima requires socket_vmnet in a root-only writable location.
+
+### Fix
+Install socket_vmnet from source directly to /opt/socket_vmnet:
+
+    git clone https://github.com/lima-vm/socket_vmnet.git
+    cd socket_vmnet
+    git checkout v1.2.2
+    make
+    sudo make PREFIX=/opt/socket_vmnet install.bin
+
+Verify correct location:
+
+    ls /opt/socket_vmnet/bin/socket_vmnet
+
+Set up sudoers so Lima can run it without password prompts:
+
+    limactl sudoers > /tmp/lima-sudoers
+    sudo install -o root /tmp/lima-sudoers /etc/sudoers.d/lima
+
+### Lesson learned
+Read Lima documentation carefully before installing dependencies.
+The security requirement for socket_vmnet location is documented
+but easy to miss. Source installation is always more reliable than
+package managers for security-sensitive binaries.
+
+---
+
+## Issue 5 - kubeadm init used wrong network interface
+
+### Symptom
+Even after fixing VM networking workers could not join because
+kubeadm advertised the wrong IP address for the API server.
+The join command generated by kubeadm init used the wrong interface
+IP instead of the shared network IP.
+
+### Root cause
+Without explicitly telling kubeadm which IP to advertise it picks
+the first available network interface which was eth0 rather than
+lima0 which is the shared network interface workers can reach.
+
+### Fix
+Always specify the correct API server advertise address explicitly:
+
+    sudo kubeadm init \
+      --pod-network-cidr=10.244.0.0/16 \
+      --kubernetes-version=v1.29.15 \
+      --apiserver-advertise-address=<CONTROL-PLANE-SHARED-NETWORK-IP>
+
+The --apiserver-advertise-address flag tells kubeadm exactly which
+IP to put in the join command and certificates.
+
+### How to find the correct IP before running kubeadm init
+
+    limactl shell control-plane -- ip addr show dev lima0
+
+Look for the inet line - that is the shared network IP to use.
+
+### Verification
+After kubeadm init check the cluster-info output:
+
+    kubectl cluster-info
+
+Should show the shared network IP:
+    Kubernetes control plane is running at https://<CONTROL-PLANE-IP>:6443
+
+### Lesson learned
+Always specify --apiserver-advertise-address when running kubeadm init
+in environments with multiple network interfaces. Never assume kubeadm
+will pick the correct one automatically. Always check which interface
+is on the shared network first using ip addr show.
