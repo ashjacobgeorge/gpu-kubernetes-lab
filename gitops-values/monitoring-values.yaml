@@ -1,0 +1,38 @@
+# Trimmed values for kube-prometheus-stack
+# Sized for Apple M4 16GB Mac running alongside a 4-node
+# Lima kubeadm cluster. Disables Alertmanager (not needed for
+# a learning lab) and caps resource requests/limits on
+# Prometheus, Grafana, and the Prometheus Operator to prevent
+# unbounded memory usage on a resource-constrained host.
+
+alertmanager:
+  enabled: false
+
+grafana:
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 200m
+      memory: 256Mi
+
+prometheus:
+  prometheusSpec:
+    retention: 1d
+    resources:
+      requests:
+        cpu: 200m
+        memory: 256Mi
+      limits:
+        cpu: 500m
+        memory: 512Mi
+
+prometheusOperator:
+  resources:
+    requests:
+      cpu: 100m
+      memory: 100Mi
+    limits:
+      cpu: 200m
+      memory: 200Mi
