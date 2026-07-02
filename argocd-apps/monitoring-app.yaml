@@ -1,0 +1,26 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: monitoring
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/ashjacobgeorge/gpu-kubernetes-lab
+    targetRevision: HEAD
+    path: gitops-values
+    helm:
+      chart: kube-prometheus-stack
+      version: "*"
+      releaseName: my-monitoring
+      valueFiles:
+        - monitoring-values.yaml
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: monitoring
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
