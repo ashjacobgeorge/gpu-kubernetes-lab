@@ -12,7 +12,7 @@ This lab simulates the infrastructure patterns used in GPU cloud platforms for A
 |-------|--------|--------------|
 | Phase 1 | Complete ✓ | 4-node kubeadm cluster on Lima VMs with Flannel CNI |
 | Phase 2A | Complete ✓ | Helm-based Prometheus and Grafana monitoring stack |
-| Phase 2B | In Progress | Argo CD GitOps deployment pipeline |
+| Phase 2B | Complete ✓ | Argo CD GitOps deployment pipeline with drift detection |
 | Phase 2C | Planned | NVIDIA GPU Operator simulation and multi-tenant scheduling |
 | Phase 3 | Planned | Model serving with Triton Inference Server |
 
@@ -47,7 +47,8 @@ Lima's Apple Virtualization framework. No emulation.
 | Lima | v2.1.3 | Linux VMs on Apple Silicon |
 | Ubuntu | 22.04 LTS | Node operating system |
 | Helm | v4.2.2 | Kubernetes package manager |
-| kube-prometheus-stack | latest | Prometheus and Grafana monitoring |
+| kube-prometheus-stack | v87.5.1 | Prometheus and Grafana monitoring |
+| Argo CD | v3.4.4 | GitOps continuous delivery |
 
 ---
 
@@ -56,10 +57,10 @@ Lima's Apple Virtualization framework. No emulation.
 Built a real multi-node Kubernetes cluster from scratch using kubeadm,
 not a simplified single-node setup or managed Kubernetes service.
 
-Key decisions and why:
+Key decisions:
 - Lima over minikube/kind — real Linux VMs, not containers or abstractions
-- kubeadm over k3s — full Kubernetes with all components visible and configurable
-- Flannel CNI — simplest overlay network, correct foundation before adding complexity
+- kubeadm over k3s — full Kubernetes with all components visible
+- Flannel CNI — simplest overlay network, correct foundation before complexity
 - Ubuntu 22.04 — most widely used Linux distribution for Kubernetes in production
 - Kubernetes v1.29 — mature, stable, fully supported by NVIDIA GPU Operator
 
@@ -72,9 +73,9 @@ Cluster status after Phase 1:
     lima-worker-3        Ready    worker          v1.29.15
 
 Phase 1 documentation:
-- docs/01-prerequisites.md — full setup from zero including SSH keys and socket_vmnet
-- docs/02-design-decisions.md — why each tool was chosen over alternatives
-- docs/03-troubleshooting.md — real issues hit and fixed during Phase 1
+- docs/01-prerequisites.md
+- docs/02-design-decisions.md
+- docs/03-troubleshooting.md
 
 ---
 
@@ -87,41 +88,74 @@ What is running:
 - Prometheus — metrics collection and storage
 - Grafana — dashboards and visualization
 - kube-state-metrics — Kubernetes object state metrics
-- node-exporter — host-level metrics on all 4 nodes (DaemonSet)
+- node-exporter — host-level metrics on all 4 nodes via DaemonSet
 - Prometheus Operator — manages Prometheus via CRDs
 
 Key decisions:
 - kube-prometheus-stack umbrella chart — bundles everything needed
 - Alertmanager disabled — not needed for a lab environment
 - Resource limits explicitly set — prevents unbounded memory usage
-  on a 16GB Mac running 4 VMs simultaneously
 - Retention set to 1d — lab does not need 10 days of metric history
 
-Dashboard screenshots (docs/screenshots/):
+Dashboard screenshots in docs/screenshots/grafana-prometheus/:
 
-| Dashboard | What it shows |
-|-----------|---------------|
+| Screenshot | What it shows |
+|------------|---------------|
 | grafana-cluster-resources.png | CPU and memory across all namespaces |
 | grafana-node-exporter.png | Host-level metrics per Lima VM node |
 | grafana-networking.png | Pod-to-pod network traffic |
 | prometheus-targets.png | Active scrape targets and their status |
 
 Phase 2A documentation:
-- docs/04-helm-monitoring.md — Helm concepts and full install steps
-- docs/05-troubleshooting-phase2.md — issues hit during Phase 2
+- docs/04-helm-monitoring.md
+- docs/05-troubleshooting-phase2.md
 
 ---
 
-## Phase 2B — Argo CD GitOps (In Progress)
+## Phase 2B — Argo CD GitOps
 
-Installing Argo CD to manage cluster deployments declaratively via Git.
-Instead of running helm install manually, Argo CD watches this repository
-and automatically syncs the cluster state to match what is declared in Git.
+Deployed Argo CD to manage cluster resources declaratively via Git.
+Instead of running helm install manually, Argo CD watches this
+repository and automatically syncs the cluster state to match
+what is declared in Git.
 
-This means:
-- Git is the single source of truth for what runs in the cluster
-- Any manual change to the cluster is detected as drift and can be auto-healed
-- All deployment history is visible as Git commit history
+What I demonstrated:
+
+Drift detection — manually deleted the Grafana Deployment to simulate
+an unauthorised manual change. Argo CD detected the cluster was
+OutOfSync with Git and automatically recreated the Deployment within
+seconds via selfHeal. The pod age difference (seconds vs 48 minutes
+for other pods) proved the automatic recovery.
+
+Server-side apply — required for large CRDs from kube-prometheus-stack
+that exceed the 256KB Kubernetes annotation limit. Added
+ServerSideApply=true to the Application syncOptions.
+
+Multiple sources — used Argo CD's multi-source feature to reference
+the Helm chart from prometheus-community and the values file from
+my GitHub repo simultaneously.
+
+Key GitOps concepts proven:
+- Git as single source of truth for cluster state
+- Automated sync on Git changes (no manual helm install needed)
+- Self-healing — manual cluster changes automatically reverted
+- 118 Kubernetes resources managed from one values file in Git
+- Drift detection visible in real time via Argo CD UI
+
+Argo CD UI screenshots in docs/screenshots/argocd/:
+
+| Screenshot | What it shows |
+|------------|---------------|
+| argocd-applications-list.png | Applications overview |
+| argocd-resource-tree.png | Visual resource tree (118 resources) |
+| argocd-synced-healthy.png | Clean Synced and Healthy state |
+| argocd-drift-detection-terminal.png | Pod age proving auto-recovery |
+| argocd-drift-healed.png | Argo CD UI after drift healed |
+| argocd-crd-annotation-error.png | CRD size limit error |
+| argocd-sync-error.png | Sync error state for reference |
+
+Phase 2B documentation:
+- argocd-apps/monitoring-app.yaml
 
 ---
 
@@ -133,13 +167,17 @@ This means:
     |   |-- worker-1.yaml
     |   |-- worker-2.yaml
     |   |-- worker-3.yaml
-    |-- gitops-values/             Helm values files (Phase 2)
+    |-- gitops-values/             Helm values files (Phase 2A)
     |   |-- monitoring-values.yaml
+    |-- argocd-apps/               Argo CD Application manifests (Phase 2B)
+    |   |-- monitoring-app.yaml
     |-- scripts/                   Operational scripts
     |   |-- startup-cluster.sh
     |   |-- shutdown-cluster.sh
     |-- docs/                      Documentation
-    |   |-- screenshots/           Dashboard screenshots
+    |   |-- screenshots/
+    |   |   |-- argocd/            Argo CD UI screenshots
+    |   |   |-- grafana-prometheus/ Monitoring dashboard screenshots
     |   |-- 01-prerequisites.md
     |   |-- 02-design-decisions.md
     |   |-- 03-troubleshooting.md
@@ -185,10 +223,13 @@ This means:
     sudo kubeadm join <CONTROL-PLANE-IP>:6443 --token <token> \
       --discovery-token-ca-cert-hash sha256:<hash>
 
-### Deploy monitoring stack
-    kubectl create namespace monitoring
-    helm install my-monitoring prometheus-community/kube-prometheus-stack \
-      -f gitops-values/monitoring-values.yaml -n monitoring
+### Deploy monitoring via Argo CD
+    kubectl create namespace argocd
+    kubectl apply -n argocd \
+      -f https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml \
+      --server-side --force-conflicts
+
+    kubectl apply -f argocd-apps/monitoring-app.yaml
 
 ---
 
@@ -210,15 +251,13 @@ logging, and graceful node cordoning before shutdown.
 ### Phase 1
 - Kubernetes cluster architecture and all control plane component roles
 - kubeadm bootstrap sequence and the full certificate generation process
-- CNI networking concepts — how Flannel overlay networking works
+- CNI networking — how Flannel overlay networking works
 - Lima VM management on Apple Silicon — vmType vz vs QEMU trade-offs
 - Infrastructure as code with declarative YAML VM blueprints
 - Debugging VM networking issues — vzNAT vs shared networking
 - socket_vmnet installation requirements and Lima network modes
-- macOS Sequoia Local Network privacy permission and its effect on
-  VM connectivity
 
-### Phase 2
+### Phase 2A
 - Helm chart structure — charts, values, releases, and revision history
 - kube-prometheus-stack umbrella chart architecture
 - Kubernetes Operator pattern and CRD-based resource management
@@ -226,14 +265,22 @@ logging, and graceful node cordoning before shutdown.
 - DaemonSet scheduling including toleration for control-plane taint
 - Port-forward proxy chain from Mac browser to pod inside cluster
 - Worker node InternalIP registration and kubelet --node-ip fix
-- kubeadm cluster limitation for etcd and controller-manager metrics
+
+### Phase 2B
+- Argo CD Application CRD — the core GitOps object
+- Multi-source Application manifest — separate chart and values repos
+- Server-side apply for large CRDs exceeding annotation size limits
+- selfHeal and prune sync policies
+- Drift detection and automatic cluster reconciliation
+- Migrating from manual Helm release to Argo CD management
+- ApplicationSet controller CRD installation ordering issue
 
 ---
 
 ## Next Steps
 
-- Complete Argo CD GitOps pipeline (Phase 2B)
 - NVIDIA GPU Operator simulation with fake-gpu-operator (Phase 2C)
 - Multi-tenant GPU scheduling with priority classes
 - Model serving with Triton Inference Server (Phase 3)
 - Cloud GPU validation on Lambda Labs or vast.ai
+- Full cluster teardown and rebuild for practice
