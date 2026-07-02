@@ -5,16 +5,17 @@ metadata:
   namespace: argocd
 spec:
   project: default
-  source:
-    repoURL: https://github.com/ashjacobgeorge/gpu-kubernetes-lab
-    targetRevision: HEAD
-    path: gitops-values
-    helm:
+  sources:
+    - repoURL: https://prometheus-community.github.io/helm-charts
       chart: kube-prometheus-stack
-      version: "*"
-      releaseName: my-monitoring
-      valueFiles:
-        - monitoring-values.yaml
+      targetRevision: "*"
+      helm:
+        releaseName: my-monitoring
+        valueFiles:
+          - $values/gitops-values/monitoring-values.yaml
+    - repoURL: https://github.com/ashjacobgeorge/gpu-kubernetes-lab
+      targetRevision: HEAD
+      ref: values
   destination:
     server: https://kubernetes.default.svc
     namespace: monitoring
